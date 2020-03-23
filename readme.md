@@ -295,9 +295,6 @@ Images have to be referenced by their digests. Digests are immutable (as opposed
   gpg --armor --export "${GPG_USER}" > key.pub
   ```
 
-- **Create Atomic (Simple) Signature Payload**
-
-
 - **Create Grafeas Occurence**
 
   Occurence is instance of a Note specific for your image.
@@ -374,7 +371,7 @@ Kritis has concept of [Attestation Authority][att-auth], which basically maps to
 
 ### Test
 
-- **Deploy pod that uses the signed image**
+- **Deploy Pod that uses the signed image**
 
   Images have to be from gcr.io (or regional eu., us. and asia. variants) registry and referenced by SHA digest.
 
