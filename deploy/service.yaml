@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kritis-validation-hook
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: kritis-validation-hook
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      protocol: TCP
+      name: https
+  selector:
+    app: kritis-validation-hook

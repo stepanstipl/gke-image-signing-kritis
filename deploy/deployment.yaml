@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kritis-validation-hook
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: kritis-validation-hook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kritis-validation-hook
+  template:
+    metadata:
+      labels:
+        app: kritis-validation-hook
+    spec:
+      serviceAccountName: kritis
+      containers:
+      - name: kritis-server
+        image: "gcr.io/kritis-project/kritis-server:v0.2.2"
+        imagePullPolicy: Always
+        args: ["--tls-cert-file=/var/tls/tls.crt",
+               "--tls-key-file=/var/tls/tls.key",
+               "--logtostderr"]
+        ports:
+          - name: https
+            containerPort: 8443
+            protocol: TCP
+        volumeMounts:
+        - mountPath: /var/tls
+          name: tls
+      volumes:
+        - name: tls
+          secret:
+            secretName: tls-kritis-secret
