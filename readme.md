@@ -57,13 +57,17 @@ K8S_NAMESPACE="kritis"
 
 ### Setup Container Analysis API
 
-You will first enable and perform initial setup of the [Google Container Analysis API][gca] (GCA). GCA is an artifact metadata API, based on open source project [Grafeas][grafeas]. It can be used to store and query various type of metadata about your software artifacts, such as signatures, vulnerabilities or deployments.
+You will first enable and perform initial setup of the [Google Container Analysis API][gca] (GCA). GCA is an artifact metadata API, based on open source project [Grafeas][grafeas]. It can be used to store and query various type of metadata about your software artifacts, such as signatures, vulnerabilities or deployments. This API is required both to sign container images, as well as to retrieve security information about existing images. Container Analysis uses the API to store vulnerability scanning results about images upload to GCR.
 
 Grafeas uses concepts of Notes and Occurrences. Notes are high-level descriptions of particular type of metadata. Occurrences are instances of notes, describing how a given note occurs on a resource.
 
 Image Attestation (signature) is an example of a Note. Attestation for `gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:1615d48b376b8a03b6beb6fc3efb62346ddb24f9492d8aa5367ab9d1bdd46482` image is example of an Occurence.
 
+You will also need to enable [Google Container Scanning API][csapi], as this enables vulnerability scanning in your project. Note that you get billed for every scanned image.
+
 [grafeas]: https://grafeas.io/
+[gca]: https://cloud.google.com/container-registry/docs/reference/rest
+[csapi]: https://cloud.google.com/container-registry/docs/enabling-disabling-container-analysis
 
 - **Enable  Container Analysis API**
 
@@ -71,32 +75,12 @@ Image Attestation (signature) is an example of a Note. Attestation for `gcr.io/g
   gcloud services enable containeranalysis.googleapis.com
   ```
 
-- **Create Grafeas Note**
- 
+- **Enable  Container Scanning API**
 
   ```sh
-  cat > note.json <<EOF
-  {
-    "name": "projects/${GCP_PROJECT}/notes/${NOTE_NAME}",
-    "shortDescription": "Image Attestation.",
-    "longDescription": "Image Attestation.",
-    "attestation": {
-      "hint": {
-        "humanReadableName": "Seal of Approval"
-  }}}
-  EOF
-
-  curl -X POST "https://containeranalysis.googleapis.com/v1/projects/${GCP_PROJECT}/notes?noteId=${NOTE_NAME}" \
-    -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-    -H "Content-Type: application/json; charset=utf-8" \
-    -d @note.json
+  gcloud services enable containerscanning.googleapis.com
   ```
 
-- **Verify the Note has been created** (optional)
-  ```sh
-  curl "https://containeranalysis.googleapis.com/v1/projects/${GCP_PROJECT}/notes/${NOTE_NAME}" \
-    -H "Authorization: Bearer $(gcloud auth print-access-token)"
-  ```
 
 ### Deploy Kritis
 
@@ -119,7 +103,7 @@ Image Attestation (signature) is an example of a Note. Attestation for `gcr.io/g
 
   ```sh
   gcloud iam roles create kritisRole \
-    --permissions "containeranalysis.notes.listOccurrences" \
+    --permissions "containeranalysis.notes.listOccurrences,containeranalysis.occurrences.list" \
     --project "${GCP_PROJECT}"
 
   gcloud projects add-iam-policy-binding "${GCP_PROJECT}" \
@@ -239,6 +223,107 @@ Image Attestation (signature) is an example of a Note. Attestation for `gcr.io/g
   | kubectl apply -f-
   ```
 
+### Admitting Images Based on Name Only
+
+This is currently not supported, Image has to have at least one attestation when using `GenericAttestationPolicy` to be allowed. This is addressed in https://github.com/grafeas/kritis/pull/449.
+
+
+### Admitting Images Based on Vulnerability Scans
+
+- **Create `ImageSecurityPolicy`**
+
+  ```console
+  cat <<EOF | kubectl apply -f-
+  apiVersion: kritis.grafeas.io/v1beta1
+  kind: ImageSecurityPolicy
+  metadata:
+    name: test-security-policy
+    namespace: default
+  spec:
+    packageVulnerabilityRequirements:
+      maximumSeverity: MEDIUM
+      allowlistCVEs:
+        - providers/goog-vulnz/notes/CVE-2017-1000082
+        - providers/goog-vulnz/notes/CVE-2017-1000081
+  EOF
+  ```
+
+- **Populate your GCR Registry**
+
+  Copy two image with security vulnerabilities (such as older `ubuntu:xenial-20161010`) to your GCR registry:
+  ```sh
+  docker pull ubuntu:xenial-20161010
+  docker tag ubuntu:xenial-20161010 gcr.io/${GCP_PROJECT}/ubuntu:xenial-20161010
+  docker push gcr.io/${GCP_PROJECT}/ubuntu:xenial-20161010
+  ```
+
+- **Review Found Vulnerabilities**
+  Wait until these have been scanned (can take couple of minutes) and verify that some `CRITICAL` vulnerabilities have been found:
+  ```sh
+  gcloud beta container images list-tags gcr.io/${GCP_PROJECT}/ubuntu
+  ```
+  The output should list some critical vulnerabilities for the ubuntu image, such as `CRITICAL=4,HIGH=30,LOW=12,MEDIUM=69`.
+
+- **Test image won't be admitted**
+
+  Deploy image without vulnerabilities:
+  ```sh
+  # Get image SHA
+  IMAGE_VULN_SHA=$(docker inspect "ubuntu:xenial-20161010" \
+  --format='{{range .RepoDigests}}{{printf "%s\n" .}}{{end}}' \
+  | grep gcr.io \
+  | cut -f2 -d"@")
+
+  # Image digest (SHA) can change once pushed to new registry
+  # -> always take the correct digest for given registry.
+
+  # Deploy Pod
+  cat <<EOF | kubectl apply -f-
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: test-healthy
+  spec:
+    containers:
+    - name: hello
+      image: "gcr.io/${GCP_PROJECT}/ubuntu:@${IMAGE_VULN_SHA}"
+      command: ["/bin/sh", "-c", "while true; do echo 'Hello World!'; date; sleep 1; done"]
+  EOF
+  ```
+
+  Image should not be admitted with message such as:
+  ```
+  Error from server: error when creating "STDIN": admission webhook "kritis-validation-hook.grafeas.io"
+  denied the request: found violations in gcr.io/<GCP_PROJECT>/ubuntu@sha256:0ab17d92ef2450481576e0c4ba0700b8e3699e3e72295577762e30866198974a
+  ```
+
+### Setup Container Analysis API for Signing
+
+- **Create Grafeas Note**
+
+  ```sh
+  cat > note.json <<EOF
+  {
+    "name": "projects/${GCP_PROJECT}/notes/${NOTE_NAME}",
+    "shortDescription": "Image Attestation.",
+    "longDescription": "Image Attestation.",
+    "attestation": {
+      "hint": {
+        "humanReadableName": "Seal of Approval"
+  }}}
+  EOF
+
+  curl -X POST "https://containeranalysis.googleapis.com/v1/projects/${GCP_PROJECT}/notes?noteId=${NOTE_NAME}" \
+    -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    -d @note.json
+  ```
+
+- **Verify the Note has been created** (optional)
+  ```sh
+  curl "https://containeranalysis.googleapis.com/v1/projects/${GCP_PROJECT}/notes/${NOTE_NAME}" \
+    -H "Authorization: Bearer $(gcloud auth print-access-token)"
+  ```
 
 ### Sign Image
 
@@ -369,7 +454,7 @@ Kritis has concept of [Attestation Authority][att-auth], which basically maps to
   ```
 
 
-### Test
+### Test Image Signing
 
 - **Deploy Pod that uses the signed image**
 
