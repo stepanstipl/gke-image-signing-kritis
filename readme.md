@@ -501,3 +501,4 @@ Kritis has concept of [Attestation Authority][att-auth], which basically maps to
 ## Caveats
 - Kritis can crash when parsing unexpected payloads in the GCA Occurence or Attestation Authority.
 - Occurence and Note structure changed between v1beta1 anv v1 of GCA API, currently Kritis only supports v1beta1.
+- If `ImageSigningPolicy` (and other policies) are not correctly formatted, and this changed in different versions of Kritis/docs, it will still be accepted (no CRD validation) and Kritis will allow the containers - as there's no policy required.
